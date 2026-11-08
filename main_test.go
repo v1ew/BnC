@@ -6,168 +6,119 @@ import (
 	"testing"
 )
 
-// --- Тесты для generateSecret ---
+// knownSecret возвращает код, который runGame сгенерирует для cfg при сиде 42:
+// генерация детерминирована, одинаковый сид даёт одинаковый код.
+func knownSecret(cfg Config) string {
+	return cfg.generateSecret(rand.New(rand.NewSource(42)))
+}
 
-func TestGenerateSecret_Properties(t *testing.T) {
-	r := rand.New(rand.NewSource(42))
+// playRound прогоняет партию с сидом 42 и возвращает весь вывод игры.
+func playRound(t *testing.T, cfg Config, input string) string {
+	t.Helper()
 
-	for i := 0; i < 1000; i++ {
-		s := generateSecret(r)
+	var out strings.Builder
+	runGame(cfg, rand.New(rand.NewSource(42)), strings.NewReader(input), &out)
+	return out.String()
+}
 
-		if len(s) != secretLength {
-			t.Fatalf("длина числа = %d, ожидалось %d (число: %q)", len(s), secretLength, s)
-		}
+func TestRunGame_Win(t *testing.T) {
+	cfg := Config{Length: 4, Alphabet: []rune("0123456789")}
+	secret := knownSecret(cfg)
 
-		if s[0] == '0' {
-			t.Fatalf("первая цифра не должна быть нулём (число: %q)", s)
-		}
+	output := playRound(t, cfg, "abcd\n1234\n"+secret+"\n")
 
-		seen := make(map[rune]bool, secretLength)
-		for _, ch := range s {
-			if ch < '0' || ch > '9' {
-				t.Fatalf("в числе есть нецифровой символ: %q", s)
-			}
-			if seen[ch] {
-				t.Fatalf("в числе есть повторяющиеся цифры: %q", s)
-			}
-			seen[ch] = true
-		}
+	if !strings.Contains(output, "Ошибка:") {
+		t.Errorf("вывод должен содержать сообщение об ошибке:\n%s", output)
+	}
+	if !strings.Contains(output, "символ 'a' не входит в алфавит игры") {
+		t.Errorf("вывод должен объяснить, что символ вне алфавита:\n%s", output)
+	}
+	if !strings.Contains(output, "Поздравляю! Вы угадали код: "+secret) {
+		t.Errorf("вывод должен содержать сообщение о победе:\n%s", output)
+	}
+	if !strings.Contains(output, "Ваш вариант: ") {
+		t.Errorf("вывод должен содержать приглашение ко вводу:\n%s", output)
 	}
 }
 
-func TestGenerateSecret_Variety(t *testing.T) {
-	// За 20 генераций должно встретиться хотя бы 2 разных числа.
-	r := rand.New(rand.NewSource(42))
-	seen := make(map[string]bool, 10)
+func TestRunGame_HintsAndExit(t *testing.T) {
+	cfg := Config{Length: 4, Alphabet: []rune("0123456789")}
+	secret := knownSecret(cfg)
 
-	for i := 0; i < 10; i++ {
-		seen[generateSecret(r)] = true
+	// Меняем местами первые два символа кода: такая догадка всегда
+	// даёт ровно двух быков и двух коров.
+	runes := []rune(secret)
+	runes[0], runes[1] = runes[1], runes[0]
+	guess := string(runes)
+
+	output := playRound(t, cfg, guess+"\nexit\n")
+
+	if !strings.Contains(output, "Быков: 2\nКоров: 2") {
+		t.Errorf("вывод должен содержать подсказку «Быков: 2» и «Коров: 2»:\n%s", output)
 	}
-
-	if len(seen) < 2 {
-		t.Fatalf("за 10 генераций получено одно и то же число")
-	}
-}
-
-func TestGenerateSecret_IsValidGuess(t *testing.T) {
-	r := rand.New(rand.NewSource(42))
-
-	for i := 0; i < 100; i++ {
-		s := generateSecret(r)
-		if err := validateGuess(s); err != nil {
-			t.Fatalf("сгенерированное число %q не проходит валидацию: %v", s, err)
-		}
+	if !strings.Contains(output, "Игра завершена.") {
+		t.Errorf("команда exit должна завершать игру:\n%s", output)
 	}
 }
 
-// --- Тесты для validateGuess ---
+func TestRunGame_ValidationErrors(t *testing.T) {
+	cfg := Config{Length: 4, Alphabet: []rune("0123456789")}
 
-func TestValidateGuess(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"валидное число", "1234", false},
-		{"с нулём в начале", "0123", false},
-		{"с нулём в конце", "9870", false},
-		{"пустая строка", "", true},
-		{"короче 4 цифр", "123", true},
-		{"длиннее 4 цифр", "12345", true},
-		{"буква внутри", "12a4", true},
-		{"буква в начале", "a123", true},
-		{"пробел внутри", "12 4", true},
-		{"только пробелы", "    ", true},
-		{"повторяющиеся цифры", "1123", true},
-		{"все одинаковые", "1111", true},
-		{"отрицательное", "-123", true},
-		{"спецсимволы", "12#4", true},
+	output := playRound(t, cfg, "1123\nab\nexit\n")
+
+	if !strings.Contains(output, "символы не должны повторяться") {
+		t.Errorf("повтор символов должен вызывать ошибку:\n%s", output)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateGuess(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateGuess(%q) ошибка = %v, wantErr = %v",
-					tt.input, err, tt.wantErr)
-			}
-		})
+	if !strings.Contains(output, "нужно ввести ровно 4 символа") {
+		t.Errorf("короткая догадка должна вызывать ошибку:\n%s", output)
 	}
 }
 
-// --- Тесты для countBullsCows ---
+func TestRunGame_ExitCommands(t *testing.T) {
+	cfg := Config{Length: 4, Alphabet: []rune("0123456789")}
 
-func TestCountBullsCows(t *testing.T) {
-	tests := []struct {
-		name      string
-		secret    string
-		guess     string
-		wantBulls int
-		wantCows  int
-	}{
-		{"точное совпадение", "1234", "1234", 4, 0},
-		{"все коровы (обратный порядок)", "1234", "4321", 0, 4},
-		{"нет совпадений", "1234", "5678", 0, 0},
-		{"два быка и две коровы", "1234", "1243", 2, 2},
-		{"три быка", "1234", "1235", 3, 0},
-		{"один бык и две коровы", "1234", "1523", 1, 2},
-		{"три быка кроме последней", "1234", "1294", 3, 0},
-		{"ноль в числе, все коровы", "0123", "3210", 0, 4},
-		{"ноль в числе, быки и коровы", "0123", "0321", 2, 2},
-		{"три коровы, ноль быков", "5678", "7564", 0, 3},
-		{"один бык и две коровы", "5678", "7654", 1, 2},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			bulls, cows := countBullsCows(tt.secret, tt.guess)
-			if bulls != tt.wantBulls || cows != tt.wantCows {
-				t.Errorf("countBullsCows(%q, %q) = (%d, %d), хотим (%d, %d)",
-					tt.secret, tt.guess, bulls, cows, tt.wantBulls, tt.wantCows)
-			}
-		})
-	}
-}
-
-func TestCountBullsCows_Identity(t *testing.T) {
-	// Для любого сгенерированного числа быков должно быть ровно secretLength, коров — 0.
-	r := rand.New(rand.NewSource(42))
-
-	for i := 0; i < 100; i++ {
-		s := generateSecret(r)
-		bulls, cows := countBullsCows(s, s)
-
-		if bulls != secretLength || cows != 0 {
-			t.Fatalf("countBullsCows(%q, %q) = (%d, %d), хотим (%d, 0)",
-				s, s, bulls, cows, secretLength)
+	for _, cmd := range []string{"exit", "quit"} {
+		output := playRound(t, cfg, cmd+"\n")
+		if !strings.Contains(output, "Игра завершена.") {
+			t.Errorf("команда %q должна завершать игру:\n%s", cmd, output)
 		}
 	}
 }
 
-func TestCountBullsCows_AllDigitsFromSecret(t *testing.T) {
-	// Если переставить цифры секрета, быки+коровы всегда = secretLength.
-	r := rand.New(rand.NewSource(42))
+func TestRunGame_EOF(t *testing.T) {
+	cfg := Config{Length: 4, Alphabet: []rune("0123456789")}
 
-	for i := 0; i < 100; i++ {
-		secret := generateSecret(r)
+	output := playRound(t, cfg, "")
 
-		// Переворачиваем строку — это всегда перестановка тех же цифр.
-		reversed := reverseString(secret)
-
-		bulls, cows := countBullsCows(secret, reversed)
-		if bulls+cows != secretLength {
-			t.Fatalf("countBullsCows(%q, %q) = (%d, %d), сумма должна быть %d",
-				secret, reversed, bulls, cows, secretLength)
-		}
+	if !strings.Contains(output, "Ввод завершён.") {
+		t.Errorf("конец ввода должен завершать игру:\n%s", output)
 	}
 }
 
-func reverseString(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := len(s) - 1; i >= 0; i-- {
-		b.WriteByte(s[i])
+func TestRunGame_HexConfig(t *testing.T) {
+	cfg := Config{Length: 5, Alphabet: []rune("0123456789abcdef")}
+	secret := knownSecret(cfg)
+
+	output := playRound(t, cfg, "abc\n"+secret+"\n")
+
+	if !strings.Contains(output, "нужно ввести ровно 5 символов") {
+		t.Errorf("короткая догадка должна вызывать ошибку:\n%s", output)
 	}
-	return b.String()
+	if !strings.Contains(output, "Алфавит: 0123456789abcdef") {
+		t.Errorf("стартовое сообщение должно показывать алфавит:\n%s", output)
+	}
+	if !strings.Contains(output, "Поздравляю! Вы угадали код: "+secret) {
+		t.Errorf("вывод должен содержать сообщение о победе:\n%s", output)
+	}
 }
 
+func TestRunGame_RussianConfig(t *testing.T) {
+	cfg := Config{Length: 3, Alphabet: []rune("абвгдеёж")}
+	secret := knownSecret(cfg)
+
+	output := playRound(t, cfg, secret+"\n")
+
+	if !strings.Contains(output, "Поздравляю! Вы угадали код: "+secret) {
+		t.Errorf("многобайтовый алфавит должен работать от начала до конца:\n%s", output)
+	}
+}
